@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ironpulse-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: ironpulse_gym
+    ports:
+      - "5433:5432"
+    volumes:
+      - ironpulse_pgdata:/var/lib/postgresql/data
+
+volumes:
+  ironpulse_pgdata:

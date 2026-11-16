@@ -1,0 +1,62 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  MEMBER
+}
+
+enum SubStatus {
+  ACTIVE
+  EXPIRED
+}
+
+model User {
+  id            String         @id @default(cuid())
+  memberCode    String         @unique
+  name          String
+  email         String         @unique
+  password      String
+  role          Role           @default(MEMBER)
+  createdAt     DateTime       @default(now())
+  subscriptions Subscription[]
+  checkIns      CheckIn[]
+}
+
+model MembershipPlan {
+  id            String         @id @default(cuid())
+  name          String
+  durationDays  Int
+  price         Int
+  description   String?
+  features      String[]
+  isActive      Boolean        @default(true)
+  isPopular     Boolean        @default(false)
+  createdAt     DateTime       @default(now())
+  subscriptions Subscription[]
+}
+
+model Subscription {
+  id        String         @id @default(cuid())
+  userId    String
+  planId    String
+  startDate DateTime       @default(now())
+  endDate   DateTime
+  status    SubStatus      @default(ACTIVE)
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plan      MembershipPlan @relation(fields: [planId], references: [id])
+}
+
+model CheckIn {
+  id          String   @id @default(cuid())
+  userId      String
+  checkedInAt DateTime @default(now())
+  method      String   @default("QR_SCAN")
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
