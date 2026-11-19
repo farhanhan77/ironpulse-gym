@@ -2063,3 +2063,27 @@ td {
     transition-duration: .01ms !important;
   }
 }
+
+@keyframes scanline {
+
+  0%,
+  100% {
+    top: 18%;
+    opacity: 0.4;
+  }
+
+  50% {
+    top: 80%;
+    opacity: 1;
+  }
+}
+
+.scan-laser {
+  position: absolute;
+  left: 20%;
+  right: 20%;
+  height: 2px;
+  background: #ef4444;
+  box-shadow: 0 0 12px #ef4444;
+  animation: scanline 2.2s ease-in-out infinite;
+}
