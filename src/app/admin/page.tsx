@@ -8,7 +8,12 @@ export default async function AdminPage() {
     const [members, plans, checkIns] = await Promise.all([
         prisma.user.findMany({
             where: { role: 'MEMBER' },
-            include: { subscriptions: { include: { plan: true } } },
+            include: {
+                subscriptions: {
+                    include: { plan: true },
+                    orderBy: { startDate: 'desc' },
+                },
+            },
             orderBy: { createdAt: 'desc' },
         }),
         prisma.membershipPlan.findMany({

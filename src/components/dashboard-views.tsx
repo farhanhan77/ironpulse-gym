@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import {
     Activity,
     ArrowUpRight,
@@ -28,6 +29,14 @@ import {
     DialogTitle,
 } from '@/components/ui/dialog'
 import { Switch } from '@/components/ui/switch'
+import {
+    approveSubscriptionAction,
+    createMemberByAdminAction,
+    createPlanAction,
+    extendMemberPlanAction,
+    rejectSubscriptionAction,
+    togglePlanStatusAction,
+} from '@/app/actions/plans'
 
 export type DBPlan = {
     id: string
@@ -44,7 +53,7 @@ export type DBSubscription = {
     id: string
     startDate: Date | string
     endDate: Date | string
-    status: 'ACTIVE' | 'EXPIRED'
+    status: 'PENDING' | 'ACTIVE' | 'EXPIRED'
     plan: DBPlan
 }
 
@@ -74,10 +83,11 @@ type MemberRow = {
     email: string
     initials: string
     plan: string
-    status: 'Aktif' | 'Segera habis' | 'Kedaluwarsa'
+    status: 'Aktif' | 'Segera habis' | 'Kedaluwarsa' | 'Menunggu Konfirmasi'
     daysLeft: number
     expires: string
     avatar: string
+    pendingSubId?: string
 }
 
 type PlanItem = {
@@ -134,6 +144,22 @@ function mapMemberRows(rawMembers: DBMember[]): MemberRow[] {
                 daysLeft: 0,
                 expires: '-',
                 avatar: AVATAR_CLASSES[index % AVATAR_CLASSES.length],
+            }
+        }
+
+        if (latestSub.status === 'PENDING') {
+            return {
+                id: member.id,
+                code: member.memberCode,
+                name: member.name,
+                email: member.email,
+                initials: getInitials(member.name),
+                plan: latestSub.plan.name,
+                status: 'Menunggu Konfirmasi',
+                daysLeft: latestSub.plan.durationDays,
+                expires: 'Belum aktif',
+                avatar: AVATAR_CLASSES[index % AVATAR_CLASSES.length],
+                pendingSubId: latestSub.id,
             }
         }
 
@@ -205,10 +231,24 @@ export function DashboardView({
     initialMembers?: DBMember[]
     initialCheckIns?: DBCheckIn[]
 }) {
+    const router = useRouter()
     const [range, setRange] = useState<'7' | '30'>('7')
+    const [processingId, setProcessingId] = useState<string | null>(null)
+
     const memberRows = useMemo(() => mapMemberRows(initialMembers), [initialMembers])
-    const activeCount = memberRows.filter((m) => m.status !== 'Kedaluwarsa').length
+    const activeCount = memberRows.filter((m) => m.status === 'Aktif' || m.status === 'Segera habis').length
     const expiringMembers = memberRows.filter((m) => m.status === 'Segera habis')
+
+    const pendingRequests = useMemo(
+        () =>
+            initialMembers
+                .filter((m) => m.subscriptions[0]?.status === 'PENDING')
+                .map((m) => ({
+                    member: m,
+                    sub: m.subscriptions[0],
+                })),
+        [initialMembers]
+    )
 
     const todayKey = new Date().toISOString().slice(0, 10)
     const todayCheckIns = initialCheckIns.filter(
@@ -225,14 +265,98 @@ export function DashboardView({
         [range, initialCheckIns]
     )
 
+    async function handleApprove(subId: string) {
+        setProcessingId(subId)
+        try {
+            await approveSubscriptionAction(subId)
+            router.refresh()
+        } finally {
+            setProcessingId(null)
+        }
+    }
+
+    async function handleReject(subId: string) {
+        setProcessingId(subId)
+        try {
+            await rejectSubscriptionAction(subId)
+            router.refresh()
+        } finally {
+            setProcessingId(null)
+        }
+    }
+
     return (
         <div className="view-stack">
             <section className="metrics-grid dashboard-kpis" aria-label="Ringkasan operasional">
                 <MetricCard label="Member Aktif" value={String(activeCount)} detail={`${memberRows.length} total terdaftar`} icon={Users} tone="red" />
                 <MetricCard label="Check-in Hari Ini" value={String(todayCheckIns)} detail="Log absensi harian" icon={Activity} />
-                <MetricCard label="Segera Habis" value={String(expiringMembers.length)} detail="Dalam 7 hari" icon={Clock3} tone="amber" />
+                <MetricCard label="Menunggu Konfirmasi" value={String(pendingRequests.length)} detail={`${expiringMembers.length} segera habis`} icon={Clock3} tone="amber" />
                 <MetricCard label="Pendapatan Aktif" value={formatRupiah(monthlyRevenue)} detail="Dari langganan aktif" icon={ArrowUpRight} />
             </section>
+
+            {/* Panel Konfirmasi Pembayaran Paket dari Member */}
+            {pendingRequests.length > 0 && (
+                <section className="panel border-amber-500/30" aria-label="Konfirmasi pengajuan paket">
+                    <div className="panel-heading">
+                        <div>
+                            <span className="eyebrow"><span className="eyebrow-dot amber-dot" /> BUTUH KONFIRMASI KASIR</span>
+                            <h2>Pengajuan Paket Member ({pendingRequests.length})</h2>
+                            <p>Pastikan pembayaran sudah diterima sebelum mengaktifkan QR member</p>
+                        </div>
+                    </div>
+                    <div className="table-wrap">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Member</th>
+                                    <th>Kode</th>
+                                    <th>Paket Dipilih</th>
+                                    <th>Tagihan</th>
+                                    <th>Aksi Konfirmasi</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {pendingRequests.map(({ member, sub }) => (
+                                    <tr key={sub.id}>
+                                        <td>
+                                            <div className="table-member">
+                                                <div className="table-avatar avatar-one">{getInitials(member.name)}</div>
+                                                <div className="member-cell-copy">
+                                                    <strong>{member.name}</strong>
+                                                    <span>{member.email}</span>
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td className="mono">{member.memberCode}</td>
+                                        <td>{sub.plan.name} ({formatDuration(sub.plan.durationDays)})</td>
+                                        <td className="mono font-semibold">{formatRupiah(sub.plan.price)}</td>
+                                        <td>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    disabled={processingId === sub.id}
+                                                    onClick={() => handleApprove(sub.id)}
+                                                    className="primary-button !py-1.5 !px-3 !text-xs"
+                                                >
+                                                    <Check size={14} /> {processingId === sub.id ? 'Memproses...' : 'Konfirmasi & Aktifkan'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={processingId === sub.id}
+                                                    onClick={() => handleReject(sub.id)}
+                                                    className="secondary-button !py-1.5 !px-3 !text-xs"
+                                                >
+                                                    Tolak
+                                                </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </section>
+            )}
 
             <section className="dashboard-insights" aria-label="Traffic pengunjung dan member segera habis">
                 <article className="panel traffic-panel">
@@ -319,16 +443,31 @@ export function DashboardView({
 }
 
 function MemberStatus({ status }: { status: MemberRow['status'] }) {
-    const tone = status === 'Aktif' ? 'active' : status === 'Segera habis' ? 'warning' : 'expired'
+    const tone =
+        status === 'Aktif'
+            ? 'active'
+            : status === 'Segera habis' || status === 'Menunggu Konfirmasi'
+                ? 'warning'
+                : 'expired'
     return <span className={`status-pill ${tone}`}><span />{status}</span>
 }
 
 export function MembersView({ initialMembers = [] }: { initialMembers?: DBMember[] }) {
+    const router = useRouter()
     const [members, setMembers] = useState<MemberRow[]>(() => mapMemberRows(initialMembers))
     const [query, setQuery] = useState('')
     const [selectedMember, setSelectedMember] = useState<MemberRow | null>(null)
     const [months, setMonths] = useState('1')
+    const [extending, setExtending] = useState(false)
     const [notice, setNotice] = useState('')
+
+    // State modal Tambah Member oleh Admin
+    const [addMemberOpen, setAddMemberOpen] = useState(false)
+    const [newName, setNewName] = useState('')
+    const [newEmail, setNewEmail] = useState('')
+    const [newPassword, setNewPassword] = useState('')
+    const [addError, setAddError] = useState('')
+    const [addingMember, setAddingMember] = useState(false)
 
     const filteredMembers = useMemo(() => {
         const normalizedQuery = query.trim().toLowerCase()
@@ -336,38 +475,144 @@ export function MembersView({ initialMembers = [] }: { initialMembers?: DBMember
         return members.filter((member) => `${member.name} ${member.email} ${member.code} ${member.plan}`.toLowerCase().includes(normalizedQuery))
     }, [members, query])
 
-    function extendSelectedMember() {
-        if (!selectedMember) return
-        const endDate = new Date()
-        endDate.setMonth(endDate.getMonth() + Number(months))
-        const updatedExpiry = endDate.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' })
-        setMembers((current) => current.map((member) => member.id === selectedMember.id ? { ...member, expires: updatedExpiry, status: 'Aktif' } : member))
-        setNotice(`Paket ${selectedMember.name} berhasil diperpanjang.`)
-        setSelectedMember(null)
+    async function handleQuickApprove(member: MemberRow) {
+        if (!member.pendingSubId) return
+        await approveSubscriptionAction(member.pendingSubId)
+        setMembers((current) =>
+            current.map((m) => (m.id === member.id ? { ...m, status: 'Aktif', pendingSubId: undefined } : m))
+        )
+        setNotice(`Paket ${member.name} berhasil dikonfirmasi & diaktifkan.`)
+        router.refresh()
+    }
+
+    async function extendSelectedMember() {
+        if (!selectedMember || extending) return
+        setExtending(true)
+        try {
+            const res = await extendMemberPlanAction(selectedMember.id, Number(months))
+            if (!res.ok || !res.endDate) {
+                setNotice(res.error || 'Gagal memperpanjang paket.')
+                setSelectedMember(null)
+                return
+            }
+
+            const updatedExpiry = new Date(res.endDate).toLocaleDateString('id-ID', {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric',
+            })
+
+            setMembers((current) =>
+                current.map((member) =>
+                    member.id === selectedMember.id
+                        ? { ...member, expires: updatedExpiry, status: 'Aktif', plan: res.planName || member.plan }
+                        : member
+                )
+            )
+            setNotice(`Paket ${selectedMember.name} berhasil diperpanjang hingga ${updatedExpiry}.`)
+            setSelectedMember(null)
+            router.refresh()
+        } finally {
+            setExtending(false)
+        }
+    }
+
+    async function handleAddMember(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault()
+        setAddingMember(true)
+        setAddError('')
+        try {
+            const res = await createMemberByAdminAction({
+                name: newName,
+                email: newEmail,
+                password: newPassword,
+            })
+
+            if (!res.ok || !res.member) {
+                setAddError(res.error || 'Gagal menambah member.')
+                return
+            }
+
+            setMembers((current) => [
+                {
+                    id: res.member.id,
+                    code: res.member.memberCode,
+                    name: res.member.name,
+                    email: res.member.email,
+                    initials: getInitials(res.member.name),
+                    plan: 'Belum ada paket',
+                    status: 'Kedaluwarsa',
+                    daysLeft: 0,
+                    expires: '-',
+                    avatar: AVATAR_CLASSES[current.length % AVATAR_CLASSES.length],
+                },
+                ...current,
+            ])
+
+            setNewName('')
+            setNewEmail('')
+            setNewPassword('')
+            setAddMemberOpen(false)
+            setNotice(`Member ${res.member.name} (${res.member.memberCode}) berhasil ditambahkan.`)
+            router.refresh()
+        } finally {
+            setAddingMember(false)
+        }
     }
 
     return (
         <div className="view-stack">
-            <section className="member-summary-row" aria-label="Ringkasan member"><span><strong>{members.length}</strong> member terdaftar</span><span><i className="summary-dot" /> Data member gym</span></section>
+            <section className="member-summary-row" aria-label="Ringkasan member">
+                <span><strong>{members.length}</strong> member terdaftar</span>
+                <span><i className="summary-dot" /> Tersambung ke PostgreSQL</span>
+            </section>
             <section className="panel data-panel">
-                <div className="data-toolbar"><div><h2>Semua Member</h2><p>Kelola keanggotaan dan status paket</p></div><label className="search-control"><Search size={16} aria-hidden="true" /><span className="sr-only">Cari member</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, email, atau ID..." /></label></div>
+                <div className="data-toolbar">
+                    <div><h2>Semua Member</h2><p>Kelola keanggotaan dan status paket</p></div>
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <label className="search-control">
+                            <Search size={16} aria-hidden="true" />
+                            <span className="sr-only">Cari member</span>
+                            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Cari nama, email, atau ID..." />
+                        </label>
+                        <button type="button" className="primary-button" onClick={() => setAddMemberOpen(true)}>
+                            <span>+</span> Tambah Member
+                        </button>
+                    </div>
+                </div>
                 {notice && <div className="inline-notice" role="status"><Check size={15} />{notice}<button onClick={() => setNotice('')} aria-label="Tutup pemberitahuan"><X size={14} /></button></div>}
-                <div className="table-wrap"><table className="member-table"><thead><tr><th>Member</th><th>ID Member</th><th>Paket</th><th>Status</th><th>Berlaku sampai</th><th><span className="sr-only">Aksi</span></th></tr></thead><tbody>{filteredMembers.map((member) => <tr key={member.id}><td><div className="table-member"><div className={`table-avatar ${member.avatar}`}>{member.initials}</div><div className="member-cell-copy"><strong>{member.name}</strong><span>{member.email}</span></div></div></td><td className="mono member-id">{member.code}</td><td>{member.plan}</td><td><MemberStatus status={member.status} /></td><td>{member.expires}</td><td><button className="row-action" onClick={() => { setSelectedMember(member); setMonths('1') }}>Extend Plan</button></td></tr>)}</tbody></table></div>
+                <div className="table-wrap"><table className="member-table"><thead><tr><th>Member</th><th>ID Member</th><th>Paket</th><th>Status</th><th>Berlaku sampai</th><th><span className="sr-only">Aksi</span></th></tr></thead><tbody>{filteredMembers.map((member) => <tr key={member.id}><td><div className="table-member"><div className={`table-avatar ${member.avatar}`}>{member.initials}</div><div className="member-cell-copy"><strong>{member.name}</strong><span>{member.email}</span></div></div></td><td className="mono member-id">{member.code}</td><td>{member.plan}</td><td><MemberStatus status={member.status} /></td><td>{member.expires}</td><td>{member.status === 'Menunggu Konfirmasi' ? <button className="primary-button !py-1.5 !px-3 !text-xs" onClick={() => handleQuickApprove(member)}>Konfirmasi</button> : <button className="row-action" onClick={() => { setSelectedMember(member); setMonths('1') }}>Extend Plan</button>}</td></tr>)}</tbody></table></div>
                 {filteredMembers.length === 0 && (
                     <div className="table-empty">
                         <Users size={20} />
                         <strong>{members.length === 0 ? 'Belum ada member terdaftar' : 'Member tidak ditemukan'}</strong>
-                        <span>{members.length === 0 ? 'Tabel User di database PostgreSQL masih kosong.' : 'Coba kata kunci lain.'}</span>
+                        <span>{members.length === 0 ? 'Klik "+ Tambah Member" untuk mendaftarkan anggota pertama.' : 'Coba kata kunci lain.'}</span>
                     </div>
                 )}
                 <div className="table-bottom"><span>Menampilkan {filteredMembers.length} dari {members.length} member</span><span className="table-footnote">Tersambung ke PostgreSQL</span></div>
             </section>
+
+            {/* Dialog Extend Plan */}
             <Dialog open={!!selectedMember} onOpenChange={(open) => !open && setSelectedMember(null)}>
                 <DialogContent className="dashboard-dialog">
-                    <DialogHeader className="dashboard-dialog-header"><span className="dialog-icon"><CalendarDays size={18} /></span><DialogTitle>Extend Plan</DialogTitle><DialogDescription>Tambahkan masa aktif keanggotaan member.</DialogDescription></DialogHeader>
+                    <DialogHeader className="dashboard-dialog-header"><span className="dialog-icon"><CalendarDays size={18} /></span><DialogTitle>Extend Plan</DialogTitle><DialogDescription>Tambahkan masa aktif keanggotaan member ke database.</DialogDescription></DialogHeader>
                     {selectedMember && <div className="extend-member-card"><div className={`table-avatar ${selectedMember.avatar}`}>{selectedMember.initials}</div><div><strong>{selectedMember.name}</strong><span>{selectedMember.code} · {selectedMember.plan}</span></div></div>}
                     <label className="form-field"><span>Perpanjang selama</span><span className="select-wrap"><select value={months} onChange={(event) => setMonths(event.target.value)}><option value="1">1 bulan</option><option value="3">3 bulan</option><option value="6">6 bulan</option><option value="12">12 bulan</option></select><ChevronDown size={15} aria-hidden="true" /></span></label>
-                    <div className="dialog-actions"><button className="secondary-button" onClick={() => setSelectedMember(null)}>Batal</button><button className="primary-button" onClick={extendSelectedMember}>Konfirmasi Perpanjangan</button></div>
+                    <div className="dialog-actions"><button className="secondary-button" onClick={() => setSelectedMember(null)}>Batal</button><button className="primary-button" disabled={extending} onClick={extendSelectedMember}>{extending ? 'Menyimpan...' : 'Konfirmasi Perpanjangan'}</button></div>
+                </DialogContent>
+            </Dialog>
+
+            {/* Dialog Tambah Member Baru */}
+            <Dialog open={addMemberOpen} onOpenChange={setAddMemberOpen}>
+                <DialogContent className="dashboard-dialog">
+                    <DialogHeader className="dashboard-dialog-header"><span className="dialog-icon"><Users size={18} /></span><DialogTitle>Tambah Member Baru</DialogTitle><DialogDescription>Daftarkan akun member baru dengan kode QR unik otomatis.</DialogDescription></DialogHeader>
+                    <form className="plan-form" onSubmit={handleAddMember}>
+                        <label className="form-field"><span>Nama lengkap</span><input autoFocus value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Contoh: Dimas Saputra" required /></label>
+                        <label className="form-field"><span>Email</span><input type="email" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} placeholder="dimas@email.com" required /></label>
+                        <label className="form-field"><span>Password awal</span><input type="password" minLength={6} value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="Minimal 6 karakter" required /></label>
+                        {addError && <p className="form-error" role="alert">{addError}</p>}
+                        <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setAddMemberOpen(false)}>Batal</button><button type="submit" disabled={addingMember} className="primary-button"><Check size={15} /> {addingMember ? 'Mendaftarkan...' : 'Simpan Member'}</button></div>
+                    </form>
                 </DialogContent>
             </Dialog>
         </div>
@@ -375,6 +620,7 @@ export function MembersView({ initialMembers = [] }: { initialMembers?: DBMember
 }
 
 export function PlansView({ initialPlans = [] }: { initialPlans?: DBPlan[] }) {
+    const router = useRouter()
     const [plans, setPlans] = useState<PlanItem[]>(() =>
         initialPlans.map((p) => ({
             id: p.id,
@@ -393,22 +639,61 @@ export function PlansView({ initialPlans = [] }: { initialPlans?: DBPlan[] }) {
     const [price, setPrice] = useState('')
     const [description, setDescription] = useState('')
     const [formError, setFormError] = useState('')
+    const [saving, setSaving] = useState(false)
+
     const activePlans = plans.filter((plan) => plan.active).length
 
-    function addPlan(event: React.FormEvent<HTMLFormElement>) {
+    async function addPlan(event: React.FormEvent<HTMLFormElement>) {
         event.preventDefault()
         const numericPrice = Number(price)
         if (!name.trim() || !Number.isFinite(numericPrice) || numericPrice <= 0) {
             setFormError('Isi nama paket dan harga yang valid.')
             return
         }
-        setPlans((current) => [...current, { id: String(Date.now()), name: name.trim(), duration, price: numericPrice, description: description.trim() || 'Paket keanggotaan IronPulse.', features: ['Akses gym sesuai masa aktif', 'Semua area latihan'], active: true }])
-        setName('')
-        setDuration('30 hari')
-        setPrice('')
-        setDescription('')
-        setFormError('')
-        setAddOpen(false)
+
+        setSaving(true)
+        try {
+            const res = await createPlanAction({
+                name: name.trim(),
+                durationLabel: duration,
+                price: numericPrice,
+                description: description.trim(),
+            })
+
+            if (!res.ok || !res.plan) {
+                setFormError(res.error || 'Gagal menyimpan paket.')
+                return
+            }
+
+            setPlans((current) => [
+                ...current,
+                {
+                    id: res.plan.id,
+                    name: res.plan.name,
+                    duration: formatDuration(res.plan.durationDays),
+                    price: res.plan.price,
+                    description: res.plan.description || 'Paket keanggotaan IronPulse.',
+                    features: res.plan.features,
+                    active: res.plan.isActive,
+                    popular: res.plan.isPopular,
+                },
+            ])
+            setName('')
+            setDuration('30 hari')
+            setPrice('')
+            setDescription('')
+            setFormError('')
+            setAddOpen(false)
+            router.refresh()
+        } finally {
+            setSaving(false)
+        }
+    }
+
+    async function handleTogglePlan(planId: string, checked: boolean) {
+        setPlans((current) => current.map((item) => (item.id === planId ? { ...item, active: checked } : item)))
+        await togglePlanStatusAction(planId, checked)
+        router.refresh()
     }
 
     return (
@@ -426,7 +711,7 @@ export function PlansView({ initialPlans = [] }: { initialPlans?: DBPlan[] }) {
                 <section className="plans-grid" aria-label="Paket membership">
                     {plans.map((plan) => <article className={`panel plan-card ${plan.popular ? 'popular' : ''} ${!plan.active ? 'inactive-plan' : ''}`} key={plan.id}>
                         {plan.popular && <span className="popular-tag">PALING POPULER</span>}
-                        <div className="plan-card-heading"><span className="plan-mark"><Dumbbell size={17} /></span><div className="plan-switch-label"><span>{plan.active ? 'Aktif' : 'Nonaktif'}</span><Switch checked={plan.active} onCheckedChange={(checked) => setPlans((current) => current.map((item) => item.id === plan.id ? { ...item, active: checked } : item))} aria-label={`Paket ${plan.name}`} /></div></div>
+                        <div className="plan-card-heading"><span className="plan-mark"><Dumbbell size={17} /></span><div className="plan-switch-label"><span>{plan.active ? 'Aktif' : 'Nonaktif'}</span><Switch checked={plan.active} onCheckedChange={(checked) => handleTogglePlan(plan.id, checked)} aria-label={`Paket ${plan.name}`} /></div></div>
                         <span className="plan-duration">{plan.duration}</span><h2>{plan.name}</h2><p className="plan-description">{plan.description}</p>
                         <div className="plan-price">{formatRupiah(plan.price)}<span> / {plan.duration}</span></div>
                         <div className="plan-divider" />
@@ -441,10 +726,10 @@ export function PlansView({ initialPlans = [] }: { initialPlans?: DBPlan[] }) {
                     <DialogHeader className="dashboard-dialog-header"><span className="dialog-icon"><Dumbbell size={18} /></span><DialogTitle>Add Plan</DialogTitle><DialogDescription>Buat pilihan membership baru untuk member IronPulse.</DialogDescription></DialogHeader>
                     <form className="plan-form" onSubmit={addPlan}>
                         <label className="form-field"><span>Nama paket</span><input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Contoh: Bulanan Plus" required /></label>
-                        <div className="form-grid"><label className="form-field"><span>Durasi</span><span className="select-wrap"><select value={duration} onChange={(event) => setDuration(event.target.value)}><option>1 hari</option><option>30 hari</option><option>3 bulan</option><option>6 bulan</option><option>12 bulan</option></select><ChevronDown size={15} aria-hidden="true" /></span></label><label className="form-field"><span>Harga (Rp)</span><input type="number" min="1000" step="1000" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="450000" required /></label></div>
+                        <div className="form-grid"><label className="form-field"><span>Durasi</span><span className="select-wrap"><select value={duration} onChange={(event) => setDuration(event.target.value)}><option>1 hari</option><option>30 hari</option><option>3 bulan</option><option>6 bulan</option><option>12 bulan</option></select><ChevronDown size={15} aria-hidden="true" /></span></label><label className="form-field"><span>Harga (Rp)</span><input type="number" min="1000" step="1000" value={price} onChange={(event) => setPrice(event.target.value)} placeholder="150000" required /></label></div>
                         <label className="form-field"><span>Deskripsi <small>Opsional</small></span><textarea value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Ceritakan keunggulan paket ini" rows={3} /></label>
                         {formError && <p className="form-error" role="alert">{formError}</p>}
-                        <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setAddOpen(false)}>Batal</button><button type="submit" className="primary-button"><Check size={15} /> Simpan Paket</button></div>
+                        <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setAddOpen(false)}>Batal</button><button type="submit" disabled={saving} className="primary-button"><Check size={15} /> {saving ? 'Menyimpan...' : 'Simpan Paket'}</button></div>
                     </form>
                 </DialogContent>
             </Dialog>
