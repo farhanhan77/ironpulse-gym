@@ -1,8 +1,9 @@
+import { Suspense } from 'react'
 import { connection } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import AdminDashboard from '@/components/admin-dashboard'
 
-export default async function AdminPage() {
+async function AdminContent() {
     await connection()
 
     const [members, plans, checkIns] = await Promise.all([
@@ -32,5 +33,19 @@ export default async function AdminPage() {
             initialPlans={plans}
             initialCheckIns={checkIns}
         />
+    )
+}
+
+export default function AdminPage() {
+    return (
+        <Suspense
+            fallback={
+                <div className="min-h-screen bg-[#0E0E11] flex items-center justify-center text-sm text-[#A1A1AA]">
+                    Memuat Dashboard Admin...
+                </div>
+            }
+        >
+            <AdminContent />
+        </Suspense>
     )
 }

@@ -17,20 +17,25 @@ export function QrCameraScanner({ onScan }: QrCameraScannerProps) {
 
     useEffect(() => {
         const elementId = 'ironpulse-qr-reader'
-        const container = document.getElementById(elementId)
-        if (container) container.innerHTML = ''
-
-        const html5QrCode = new Html5Qrcode(elementId)
         let cancelled = false
-        let started = false
+        let html5QrCode: Html5Qrcode | null = null
 
-        async function startCamera() {
+        const timer = setTimeout(async () => {
+            if (cancelled) return
+
+            const container = document.getElementById(elementId)
+            if (!container) return
+            container.innerHTML = ''
+
+            const scanner = new Html5Qrcode(elementId)
+            html5QrCode = scanner
+
             try {
-                await html5QrCode.start(
+                await scanner.start(
                     { facingMode: 'environment' },
                     { fps: 10, qrbox: { width: 190, height: 190 } },
                     async (decodedText) => {
-                        if (lockRef.current) return
+                        if (lockRef.current || cancelled) return
                         lockRef.current = true
                         try {
                             await onScanRef.current(decodedText)
@@ -44,30 +49,46 @@ export function QrCameraScanner({ onScan }: QrCameraScannerProps) {
                 )
 
                 if (cancelled) {
-                    await html5QrCode.stop().catch(() => { })
-                    html5QrCode.clear()
+                    if (scanner.isScanning) {
+                        await scanner.stop().catch(() => { })
+                    }
+                    try {
+                        scanner.clear()
+                    } catch { }
                     return
                 }
 
-                started = true
                 setIsScanning(true)
                 setCameraError(null)
-            } catch {
-                if (!cancelled) {
-                    setCameraError('Kamera tidak tersedia atau izin ditolak. Gunakan verifikasi manual di bawah.')
+            } catch (err: unknown) {
+                if (cancelled) return
+                const msg = err instanceof Error ? err.message : String(err)
+                if (msg.includes('AbortError') || msg.includes('removed from the document')) {
+                    return
                 }
+                setCameraError('Kamera tidak tersedia atau izin ditolak. Gunakan verifikasi manual di bawah.')
             }
-        }
-
-        startCamera()
+        }, 60)
 
         return () => {
             cancelled = true
-            if (started && html5QrCode.isScanning) {
-                html5QrCode
-                    .stop()
-                    .then(() => html5QrCode.clear())
-                    .catch(() => { })
+            clearTimeout(timer)
+            const scanner = html5QrCode
+            if (scanner) {
+                if (scanner.isScanning) {
+                    scanner
+                        .stop()
+                        .then(() => {
+                            try {
+                                scanner.clear()
+                            } catch { }
+                        })
+                        .catch(() => { })
+                } else {
+                    try {
+                        scanner.clear()
+                    } catch { }
+                }
             }
         }
     }, [])
@@ -115,13 +136,9 @@ export function QrCameraScanner({ onScan }: QrCameraScannerProps) {
                     justifyContent: 'center',
                 }}
             >
-                {/* Siku Kiri Atas */}
                 <span style={{ ...bracketBase, top: '28px', left: '28px', borderWidth: '3px 0 0 3px' }} />
-                {/* Siku Kanan Atas */}
                 <span style={{ ...bracketBase, top: '28px', right: '28px', borderWidth: '3px 3px 0 0' }} />
-                {/* Siku Kiri Bawah */}
                 <span style={{ ...bracketBase, bottom: '28px', left: '28px', borderWidth: '0 0 3px 3px' }} />
-                {/* Siku Kanan Bawah */}
                 <span style={{ ...bracketBase, bottom: '28px', right: '28px', borderWidth: '0 3px 3px 0' }} />
 
                 {isScanning && (

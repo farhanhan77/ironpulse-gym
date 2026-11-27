@@ -1,8 +1,9 @@
+import { Suspense } from 'react'
 import { connection } from 'next/server'
 import { prisma } from '@/lib/prisma'
 import LandingView from '@/components/landing-view'
 
-export default async function LandingPage() {
+async function LandingContent() {
   await connection()
 
   const activePlans = await prisma.membershipPlan.findMany({
@@ -21,5 +22,13 @@ export default async function LandingPage() {
         features: plan.features,
       }))}
     />
+  )
+}
+
+export default function LandingPage() {
+  return (
+    <Suspense fallback={<LandingView activePlans={[]} />}>
+      <LandingContent />
+    </Suspense>
   )
 }
